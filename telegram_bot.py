@@ -5,7 +5,7 @@ import os
 
 # ----- تنظیمات اولیه -----
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')  # توکنی که از BotFather گرفتی رو اینجا بذار
-RENDER_API_URL = "https://chatai-3-thwd.onrender.com/chat"  # آدرس API که روی Render گذاشتی
+RENDER_API_URL = "https://chatai-3-v2vk.onrender.com/chat"  # آدرس API که روی Render گذاشتی
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN environment variable not set!")
