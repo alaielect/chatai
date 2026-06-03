@@ -1,2 +1,5 @@
 flask
 llama-cpp-python
+requests
+beautifulsoup4
+googlesearch-python
