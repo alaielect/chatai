@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # ========== تنظیمات مدل ==========
 # استفاده از Qwen2.5-0.5B (بسیار قوی‌تر از SmolLM)
-MODEL_URL = "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+MODEL_URL = "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-IQ4_XS.gguf"
 MODEL_PATH = "model.gguf"
 
 # دانلود مدل (فقط یک بار)
