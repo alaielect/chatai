@@ -3,12 +3,11 @@ from llama_cpp import Llama
 import urllib.request
 import os
 import json
-from duckduckgo_search import DDGS  # <-- اضافه شده
+from search import web_search, needs_web_search
 
 app = Flask(__name__)
 
 # ---------- تنظیمات مدل ----------
-# استفاده از مدل سبک IQ4_XS که قبلا جواب داده
 MODEL_URL = "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-IQ4_XS.gguf"
 MODEL_PATH = "model.gguf"
 
@@ -18,56 +17,45 @@ if not os.path.exists(MODEL_PATH):
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     print("✅ Model downloaded!")
 
-# لود مدل با تنظیمات بهینه (رم کمتر)
+# لود مدل
 print("🔄 Loading model...")
 llm = Llama(
     model_path=MODEL_PATH,
-    n_ctx=512,           # کاهش حافظه مصرفی
-    n_threads=1,         # کاهش تردها
+    n_ctx=512,
+    n_threads=1,
     verbose=False
 )
 print("✅ Model loaded!")
 
-# ---------- تابع جستجوی اینترنت (DuckDuckGo) ----------
-def search_web(query):
-    """
-    جستجو در اینترنت با DuckDuckGo و برگرداندن نتایج
-    """
-    try:
-        print(f"🌐 Searching DuckDuckGo for: {query}")
-        with DDGS() as ddgs:
-            # گرفتن 2 نتیجه برتر
-            results = list(ddgs.text(query, max_results=2))
-            
-            if not results:
-                return None
-            
-            # ساخت متن جستجو برای ارسال به مدل
-            search_context = "Here is the latest information from the web:\n\n"
-            for i, r in enumerate(results, 1):
-                title = r.get('title', 'No title')
-                body = r.get('body', 'No content')
-                href = r.get('href', '#')
-                search_context += f"{i}. **{title}**\n   {body}\n   Source: {href}\n\n"
-            
-            return search_context
-    except Exception as e:
-        print(f"Search error: {e}")
-        return None
-
-def needs_web_search(prompt):
-    """
-    تشخیص نیاز به جستجو بر اساس کلمات کلیدی
-    """
-    keywords = ['خبر', 'امروز', 'الان', 'جدید', 'قیمت', 'هوا', 'وضعیت',
-                'news', 'today', 'current', 'latest', 'weather', 'price', 
-                'score', 'result', 'update', 'breaking', 'now']
-    prompt_lower = prompt.lower()
-    return any(keyword in prompt_lower for keyword in keywords)
-
-# ---------- مدیریت حافظه چت ----------
+# ---------- مدیریت تاریخچه ----------
 user_histories = {}
 MAX_HISTORY = 3
+
+def get_system_prompt(web_context=None):
+    """ساخت پرامپت سیستم با یا بدون نتیجه جستجو"""
+    base_prompt = """You are a helpful AI assistant. 
+Answer in the same language as the user.
+Keep answers concise and accurate.
+If you don't know something, say so honestly.
+"""
+    
+    if web_context:
+        base_prompt += f"""
+🔍 **WEB SEARCH RESULTS (use this information):**
+{web_context}
+
+Use the above search results to answer the user's question.
+If the search results are relevant, use them.
+If not, use your own knowledge.
+Always mention your sources if you use search results.
+"""
+    else:
+        base_prompt += """
+If the user asks for latest news, weather, or current information, 
+you can suggest them to ask more specifically or use web search.
+"""
+    
+    return base_prompt
 
 # ---------- API اصلی ----------
 @app.route('/chat', methods=['POST'])
@@ -81,34 +69,36 @@ def chat():
 
     print(f"📩 User {user_id}: {user_message}")
     
-    # --- مرحله 1: جستجوی اینترنت اگر نیاز باشد ---
+    # ---------- مرحله 1: چک کردن نیاز به جستجو ----------
     web_context = None
     if needs_web_search(user_message):
-        web_context = search_web(user_message)
+        print(f"🌐 Searching web for: {user_message}")
+        web_context = web_search(user_message)
+        if web_context:
+            print("✅ Search results found")
+        else:
+            print("⚠️ No search results")
     
-    # --- مرحله 2: مدیریت تاریخچه ---
+    # ---------- مرحله 2: مدیریت تاریخچه ----------
     if user_id not in user_histories:
         user_histories[user_id] = []
     
-    # اضافه کردن پیام کاربر
-    user_histories[user_id].append(f"User: {user_message}")
+    # محدود کردن تاریخچه
+    if len(user_histories[user_id]) > MAX_HISTORY * 2:
+        user_histories[user_id] = user_histories[user_id][-MAX_HISTORY * 2:]
     
-    # --- مرحله 3: ساخت پرامپت (با یا بدون نتیجه جستجو) ---
-    history = user_histories[user_id][-MAX_HISTORY:]
+    # ---------- مرحله 3: ساخت پرامپت ----------
+    system_prompt = get_system_prompt(web_context)
     
-    # پرامپت پایه
-    system_prompt = """You are a helpful AI assistant. 
-Answer in the same language as the user.
-Be concise and accurate.
-"""
+    # ساخت تاریخچه مکالمه
+    conversation = []
+    for msg in user_histories[user_id]:
+        conversation.append(msg)
     
-    # اضافه کردن نتایج جستجو اگر وجود داشته باشد
-    if web_context:
-        system_prompt += f"\n\n{web_context}\nUse the above search results to answer. Be accurate and mention sources if relevant.\n"
+    conversation.append(f"User: {user_message}")
+    prompt = system_prompt + "\n" + "\n".join(conversation[-MAX_HISTORY:]) + "\nAssistant:"
     
-    prompt = system_prompt + "\n" + "\n".join(history) + "\nAssistant:"
-    
-    # --- مرحله 4: گرفتن پاسخ از مدل ---
+    # ---------- مرحله 4: دریافت پاسخ از مدل ----------
     try:
         output = llm(
             prompt,
@@ -118,21 +108,12 @@ Be concise and accurate.
         )
         bot_reply = output['choices'][0]['text'].strip()
         
-        # اگر جواب خالی بود
-        if not bot_reply:
+        if not bot_reply or len(bot_reply) < 2:
             bot_reply = "I'm not sure how to answer that. Could you rephrase?"
         
-        # اضافه کردن پاسخ به تاریخچه
+        # اضافه کردن به تاریخچه
+        user_histories[user_id].append(f"User: {user_message}")
         user_histories[user_id].append(f"Assistant: {bot_reply}")
-        
-        # محدود کردن تاریخچه
-        if len(user_histories[user_id]) > MAX_HISTORY * 2:
-            user_histories[user_id] = user_histories[user_id][-MAX_HISTORY * 2:]
-        
-        # پاکسازی کاربران قدیمی
-        if len(user_histories) > 100:
-            oldest = next(iter(user_histories))
-            del user_histories[oldest]
         
         print(f"🤖 Response: {bot_reply[:100]}...")
         return jsonify({'reply': bot_reply})
@@ -141,9 +122,19 @@ Be concise and accurate.
         print(f"❌ Error: {e}")
         return jsonify({'reply': 'Sorry, an error occurred. Please try again.'})
 
+# ---------- مسیرهای کمکی ----------
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'model': 'Qwen2.5-0.5B', 'web_search': 'DuckDuckGo'})
+    return jsonify({'status': 'ok', 'model': 'Qwen2.5-0.5B', 'search': 'SearXNG'})
+
+@app.route('/reset', methods=['POST'])
+def reset():
+    data = request.json
+    user_id = data.get('user_id')
+    if user_id and user_id in user_histories:
+        del user_histories[user_id]
+        return jsonify({'status': 'history cleared'})
+    return jsonify({'status': 'no history found'})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
