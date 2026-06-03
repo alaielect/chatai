@@ -3,7 +3,6 @@ from llama_cpp import Llama
 import urllib.request
 import os
 import json
-from search import web_search, needs_web_search
 
 app = Flask(__name__)
 
@@ -17,45 +16,33 @@ if not os.path.exists(MODEL_PATH):
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     print("✅ Model downloaded!")
 
-# لود مدل
+# لود مدل با تنظیمات بهینه
 print("🔄 Loading model...")
 llm = Llama(
     model_path=MODEL_PATH,
-    n_ctx=512,
-    n_threads=1,
+    n_ctx=512,          # محدود کردن حافظه
+    n_threads=1,        # کاهش مصرف CPU
     verbose=False
 )
 print("✅ Model loaded!")
 
-# ---------- مدیریت تاریخچه ----------
+# ---------- مدیریت توکن و تاریخچه ----------
 user_histories = {}
-MAX_HISTORY = 3
+MAX_HISTORY = 3           # فقط 3 پیام آخر رو نگه دار
+MAX_RESPONSE_TOKENS = 150  # جواب طولانی نشه
 
-def get_system_prompt(web_context=None):
-    """ساخت پرامپت سیستم با یا بدون نتیجه جستجو"""
-    base_prompt = """You are a helpful AI assistant. 
+def get_system_prompt():
+    return """You are a helpful AI assistant. 
+Answer concisely and directly. Keep responses short (max 2-3 sentences).
 Answer in the same language as the user.
-Keep answers concise and accurate.
-If you don't know something, say so honestly.
-"""
-    
-    if web_context:
-        base_prompt += f"""
-🔍 **WEB SEARCH RESULTS (use this information):**
-{web_context}
+If you don't know, say "I don't know".
+Don't make up information."""
 
-Use the above search results to answer the user's question.
-If the search results are relevant, use them.
-If not, use your own knowledge.
-Always mention your sources if you use search results.
-"""
-    else:
-        base_prompt += """
-If the user asks for latest news, weather, or current information, 
-you can suggest them to ask more specifically or use web search.
-"""
-    
-    return base_prompt
+def truncate_history(history):
+    """محدود کردن تعداد پیام‌ها برای جلوگیری از مصرف زیاد توکن"""
+    if len(history) > MAX_HISTORY * 2:
+        return history[-MAX_HISTORY * 2:]
+    return history
 
 # ---------- API اصلی ----------
 @app.route('/chat', methods=['POST'])
@@ -69,51 +56,42 @@ def chat():
 
     print(f"📩 User {user_id}: {user_message}")
     
-    # ---------- مرحله 1: چک کردن نیاز به جستجو ----------
-    web_context = None
-    if needs_web_search(user_message):
-        print(f"🌐 Searching web for: {user_message}")
-        web_context = web_search(user_message)
-        if web_context:
-            print("✅ Search results found")
-        else:
-            print("⚠️ No search results")
-    
-    # ---------- مرحله 2: مدیریت تاریخچه ----------
+    # مدیریت تاریخچه
     if user_id not in user_histories:
         user_histories[user_id] = []
     
     # محدود کردن تاریخچه
-    if len(user_histories[user_id]) > MAX_HISTORY * 2:
-        user_histories[user_id] = user_histories[user_id][-MAX_HISTORY * 2:]
+    user_histories[user_id] = truncate_history(user_histories[user_id])
     
-    # ---------- مرحله 3: ساخت پرامپت ----------
-    system_prompt = get_system_prompt(web_context)
-    
-    # ساخت تاریخچه مکالمه
-    conversation = []
-    for msg in user_histories[user_id]:
-        conversation.append(msg)
-    
+    # ساخت پرامپت با تاریخچه
+    system_prompt = get_system_prompt()
+    conversation = user_histories[user_id].copy()
     conversation.append(f"User: {user_message}")
     prompt = system_prompt + "\n" + "\n".join(conversation[-MAX_HISTORY:]) + "\nAssistant:"
     
-    # ---------- مرحله 4: دریافت پاسخ از مدل ----------
+    # گرفتن پاسخ از مدل
     try:
         output = llm(
             prompt,
-            max_tokens=200,
+            max_tokens=MAX_RESPONSE_TOKENS,
             temperature=0.7,
             stop=["User:", "\n\n", "Assistant:", "<|im_end|>"]
         )
         bot_reply = output['choices'][0]['text'].strip()
         
+        # اگه جواب خالی بود یا خیلی کوتاه
         if not bot_reply or len(bot_reply) < 2:
             bot_reply = "I'm not sure how to answer that. Could you rephrase?"
         
-        # اضافه کردن به تاریخچه
+        # به روز رسانی تاریخچه
         user_histories[user_id].append(f"User: {user_message}")
         user_histories[user_id].append(f"Assistant: {bot_reply}")
+        user_histories[user_id] = truncate_history(user_histories[user_id])
+        
+        # پاکسازی کاربران قدیمی برای جلوگیری از مصرف بیش از حد حافظه
+        if len(user_histories) > 50:
+            oldest = next(iter(user_histories))
+            del user_histories[oldest]
         
         print(f"🤖 Response: {bot_reply[:100]}...")
         return jsonify({'reply': bot_reply})
@@ -125,10 +103,15 @@ def chat():
 # ---------- مسیرهای کمکی ----------
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'model': 'Qwen2.5-0.5B', 'search': 'SearXNG'})
+    return jsonify({
+        'status': 'ok', 
+        'model': 'Qwen2.5-0.5B',
+        'active_users': len(user_histories)
+    })
 
 @app.route('/reset', methods=['POST'])
 def reset():
+    """ریست کردن تاریخچه یک کاربر"""
     data = request.json
     user_id = data.get('user_id')
     if user_id and user_id in user_histories:
